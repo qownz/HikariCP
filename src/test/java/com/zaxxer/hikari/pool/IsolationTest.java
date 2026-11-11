@@ -17,6 +17,7 @@
 package com.zaxxer.hikari.pool;
 
 import static com.zaxxer.hikari.pool.TestElf.newHikariDataSource;
+import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertNotSame;
 import static org.junit.Assert.assertSame;
 
@@ -26,6 +27,8 @@ import java.sql.SQLException;
 import org.junit.Test;
 
 import com.zaxxer.hikari.HikariDataSource;
+import com.zaxxer.hikari.mocks.StubConnection;
+import com.zaxxer.hikari.mocks.StubDataSource;
 
 public class IsolationTest
 {
@@ -48,6 +51,76 @@ public class IsolationTest
                assertSame(connection.unwrap(Connection.class), connection2.unwrap(Connection.class));
             }
          }
+      }
+   }
+
+   @Test
+   public void testIsolationDetectionRetriedAfterTransientFailure() throws SQLException
+   {
+      try (HikariDataSource ds = newHikariDataSource()) {
+         ds.setMinimumIdle(0);
+         ds.setMaximumPoolSize(1);
+         ds.setConnectionTimeout(500);
+         ds.setInitializationFailTimeout(-1);
+         ds.setDataSource(new TransientFailureDataSource());
+
+         try (Connection connection = ds.getConnection()) {
+            assertEquals(Connection.TRANSACTION_READ_COMMITTED, connection.getTransactionIsolation());
+            connection.setTransactionIsolation(Connection.TRANSACTION_SERIALIZABLE);
+         }
+
+         try (Connection connection = ds.getConnection()) {
+            assertEquals(Connection.TRANSACTION_READ_COMMITTED, connection.getTransactionIsolation());
+         }
+      }
+   }
+
+   private static final class TransientFailureDataSource extends StubDataSource
+   {
+      private boolean first = true;
+
+      @Override
+      public Connection getConnection() throws SQLException
+      {
+         var connection = new TransientFailureConnection(first);
+         first = false;
+         return connection;
+      }
+
+      @Override
+      public Connection getConnection(String username, String password) throws SQLException
+      {
+         return getConnection();
+      }
+   }
+
+   private static final class TransientFailureConnection extends StubConnection
+   {
+      private final boolean failIsolationDetection;
+
+      TransientFailureConnection(final boolean failIsolationDetection)
+      {
+         this.failIsolationDetection = failIsolationDetection;
+      }
+
+      @Override
+      public int getTransactionIsolation() throws SQLException
+      {
+         if (failIsolationDetection) {
+            throw new SQLException("WSREP has not yet prepared node for application use", "08S01");
+         }
+
+         return Connection.TRANSACTION_READ_COMMITTED;
+      }
+
+      @Override
+      public void setTransactionIsolation(int level) throws SQLException
+      {
+         if (level < Connection.TRANSACTION_NONE) {
+            throw new SQLException("Unsupported transaction isolation level '" + level + "'");
+         }
+
+         super.setTransactionIsolation(level);
       }
    }
 

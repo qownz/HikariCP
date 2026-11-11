@@ -508,9 +508,15 @@ abstract class PoolBase
       }
       catch (SQLException e) {
          logger.warn("{} - Default transaction isolation level detection failed ({}).", poolName, e.getMessage());
-         if (e.getSQLState() != null && !e.getSQLState().startsWith("08")) {
-            throw e;
+         if (e.getSQLState() == null) {
+            // tolerate drivers that do not report a SQLState for this call
+            return;
          }
+
+         // Fail this setup so the detection is retried on a subsequent connection.  Leaving the isolation
+         // level unresolved (-1) makes every further setup call setTransactionIsolation(-1), and a
+         // connection-class (08xxx) SQLState is transient by nature.
+         throw e;
       }
    }
 
